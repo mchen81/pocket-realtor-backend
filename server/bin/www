@@ -1,0 +1,111 @@
+#!/usr/bin/env node
+const config = require("../config");
+const ChatRoomService = require("../services/ChatRoomService");
+var app = require('../app');
+var debug = require('debug')('server:server');
+var fs = require('fs');
+var path = require('path');
+
+
+if (config.http.enable && config.https.enable){
+  throw "You cannot enable http and https at the same time";
+}
+
+if (!config.http.enable && !config.https.enable){
+  throw "You need to enable one of http or https";
+}
+
+var server = null;
+var port = 0;
+if(config.http.enable){
+  const http = require('http')
+  port = config.http.port
+  app.set("port", port);
+  server = http.createServer(app);
+}else{
+  const https = require('https')
+  port = config.https.port
+  const privateKey = fs.readFileSync(path.resolve(config.https.privary_key_pem), 'utf8');
+  const certificate = fs.readFileSync(path.resolve(config.https.cert_pem), 'utf8');
+  const ca = fs.readFileSync(path.resolve(config.https.chain_pem), 'utf8');
+  app.set("port", port);
+  const credentials = {
+    key: privateKey,
+    cert: certificate,
+    ca: ca
+  };
+  server = https.createServer(credentials, app);
+}
+var io = require("socket.io")(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
+});
+
+io.on("connection", (socket) => {
+  const id = socket.handshake.query.id;
+  socket.join(id);
+  console.log(id);
+  socket.on("send-message", ({ conversationId, recipients, message }) => {
+    console.log(conversationId, recipients, message);
+    //add message to conversation on database
+    ChatRoomService.putMessage(conversationId, message).then(() => {
+      recipients.forEach((recipient) => {
+        console.log("sending to " + recipient.id);
+        console.log(conversationId);
+        console.log(message);
+        const room = recipient.id.toString();
+        socket.broadcast.to(room).emit("receive-message", {
+          conversationId,
+          message,
+        });
+      });
+    });
+  });
+});
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+server.listen(port);
+server.on("error", onError);
+server.on("listening", onListening);
+
+
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== "listen") {
+    throw error;
+  }
+
+  var bind = typeof port === "string" ? "Pipe " + port : "Port " + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case "EACCES":
+      console.error(bind + " requires elevated privileges");
+      process.exit(1);
+      break;
+    case "EADDRINUSE":
+      console.error(bind + " is already in use");
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === "string" ? "pipe " + addr : "port " + addr.port;
+  debug("Listening on " + bind);
+}
